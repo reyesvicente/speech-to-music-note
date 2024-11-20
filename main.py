@@ -92,9 +92,13 @@ def text_to_notes(words: List[Dict]) -> List[Note]:
     notes = []
     
     for word in words:
-        text = word['text'].lower()
-        start = word['start'] / 1000.0  # Convert to seconds
-        end = word['end'] / 1000.0
+        # Handle AssemblyAI Word objects
+        text = word.text.lower() if hasattr(word, 'text') else str(word).lower()
+        start = float(word.start) / 1000.0 if hasattr(word, 'start') else 0  # Convert to seconds
+        end = float(word.end) / 1000.0 if hasattr(word, 'end') else 0
+        
+        # Remove punctuation from text
+        text = re.sub(r'[^\w\s]', '', text)
         
         note = find_note_in_word(text)
         if note:
