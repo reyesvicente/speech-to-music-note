@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, memo } from 'react'
 
 const LoadingSpinner = () => (
   <div className="flex justify-center items-center">
@@ -6,32 +6,54 @@ const LoadingSpinner = () => (
   </div>
 )
 
-// Note frequencies in Hz
+// Base frequencies for middle octave (4)
 const NOTE_FREQUENCIES = {
-  'C': 261.63,  // Middle C
+  'C': 261.63,
+  'C#': 277.18,
   'D': 293.66,
+  'D#': 311.13,
   'E': 329.63,
   'F': 349.23,
+  'F#': 369.99,
   'G': 392.00,
+  'G#': 415.30,
   'A': 440.00,
+  'A#': 466.16,
   'B': 493.88
 }
 
-const NoteDisplay = ({ note, duration, isPlaying }) => {
-  // Calculate the width based on duration (1 second = 100px)
-  const width = Math.max(64, duration * 100)
+const getFrequencyWithOctave = (note, octave) => {
+  const baseFreq = NOTE_FREQUENCIES[note];
+  if (!baseFreq) return 440; // Default to A4 if note not found
   
-  return (
-    <div 
-      className={`flex flex-col items-center justify-center h-24 bg-white border-2 ${isPlaying ? 'border-blue-500' : 'border-gray-300'} rounded-lg mx-1 transition-all`}
-      style={{ width: `${width}px` }}
-    >
-      <span className={`text-2xl font-bold ${isPlaying ? 'text-blue-500' : 'text-gray-800'}`}>{note}</span>
-      <div className={`mt-2 w-8 h-1 ${isPlaying ? 'bg-blue-500' : 'bg-gray-800'} rounded`}></div>
-      <span className="text-sm text-gray-500 mt-1">{duration.toFixed(2)}s</span>
-    </div>
-  )
+  // Adjust frequency based on octave difference from middle octave (4)
+  return baseFreq * Math.pow(2, octave - 4);
 }
+
+const debounce = (func, wait) => {
+  let timeout;
+  return function(...args) {
+    const context = this;
+    if (timeout) clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      timeout = null;
+      func.apply(context, args);
+    }, wait);
+  };
+};
+
+const NoteDisplay = memo(({ note, octave, duration, isPlaying }) => (
+  <div 
+    className={`p-3 rounded-lg shadow-sm transition-colors duration-200 ${
+      isPlaying ? 'bg-blue-100' : 'bg-white'
+    }`}
+  >
+    <div className="text-lg font-semibold">{note}{octave}</div>
+    <div className="text-xs text-gray-500">
+      {(duration * 1000).toFixed(0)}ms
+    </div>
+  </div>
+))
 
 function App() {
   const [isRecording, setIsRecording] = useState(false)
@@ -44,8 +66,14 @@ function App() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentNoteIndex, setCurrentNoteIndex] = useState(-1)
   const mediaRecorderRef = useRef(null)
-  const chunksRef = useRef([])
+  const audioChunksRef = useRef([])
   const audioContextRef = useRef(null)
+
+  // Debounced version of setCurrentNoteIndex to reduce renders
+  const debouncedSetCurrentNote = useCallback(
+    debounce((index) => setCurrentNoteIndex(index), 50),
+    []
+  )
 
   // Initialize audio context on first user interaction
   const initAudioContext = () => {
@@ -55,20 +83,19 @@ function App() {
     return audioContextRef.current
   }
 
-  const playNote = useCallback(async (note, duration) => {
+  const playNote = useCallback(async (note, octave, duration) => {
     const audioContext = initAudioContext()
     const oscillator = audioContext.createOscillator()
     const gainNode = audioContext.createGain()
 
+    // Use the new frequency calculation function
+    const frequency = getFrequencyWithOctave(note, octave)
     oscillator.type = 'sine'
-    oscillator.frequency.setValueAtTime(NOTE_FREQUENCIES[note], audioContext.currentTime)
+    oscillator.frequency.setValueAtTime(frequency, audioContext.currentTime)
 
-    // Apply ADSR envelope
     gainNode.gain.setValueAtTime(0, audioContext.currentTime)
-    gainNode.gain.linearRampToValueAtTime(0.5, audioContext.currentTime + 0.05) // Attack
-    gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.1) // Decay
-    gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + duration - 0.1) // Sustain
-    gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + duration) // Release
+    gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.05)
+    gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + duration)
 
     oscillator.connect(gainNode)
     gainNode.connect(audioContext.destination)
@@ -81,20 +108,20 @@ function App() {
     })
   }, [])
 
-  const playAllNotes = async () => {
+  const playAllNotes = useCallback(async () => {
     if (isPlaying || !musicalNotes.length) return
 
     setIsPlaying(true)
     
     for (let i = 0; i < musicalNotes.length; i++) {
-      setCurrentNoteIndex(i)
-      const { note, duration } = musicalNotes[i]
-      await playNote(note, duration)
+      debouncedSetCurrentNote(i)
+      const { note, octave, duration } = musicalNotes[i]
+      await playNote(note, octave, duration)
     }
 
     setIsPlaying(false)
-    setCurrentNoteIndex(-1)
-  }
+    debouncedSetCurrentNote(-1)
+  }, [musicalNotes, isPlaying, playNote])
 
   const startRecording = async () => {
     try {
@@ -105,14 +132,14 @@ function App() {
       
       mediaRecorderRef.current.ondataavailable = (event) => {
         if (event.data.size > 0) {
-          chunksRef.current.push(event.data)
+          audioChunksRef.current.push(event.data)
         }
       }
 
       mediaRecorderRef.current.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: 'audio/wav' })
+        const blob = new Blob(audioChunksRef.current, { type: 'audio/wav' })
         setAudioBlob(blob)
-        chunksRef.current = []
+        audioChunksRef.current = []
       }
 
       mediaRecorderRef.current.start()
@@ -269,11 +296,12 @@ function App() {
             {musicalNotes && musicalNotes.length > 0 && (
               <div className="mt-8">
                 <h3 className="text-xl font-semibold mb-4">Musical Notes:</h3>
-                <div className="flex flex-wrap justify-center gap-2">
+                <div className="flex flex-wrap justify-center gap-4">
                   {musicalNotes.map((note, index) => (
                     <NoteDisplay 
                       key={index} 
                       note={note.note} 
+                      octave={note.octave}
                       duration={note.duration}
                       isPlaying={index === currentNoteIndex}
                     />
