@@ -182,11 +182,11 @@ function App() {
         <div className="bg-white rounded-2xl shadow-xl p-8 md:p-12">
           <div className="max-w-3xl mx-auto">
             <h2 className="text-3xl font-bold mb-8 text-center text-gray-900">
-              Speech to Musical Notes
+              Voice to Musical Notes
             </h2>
             
             <div className="text-center mb-6 text-gray-600">
-              Speak musical note names (A, B, C, etc.) or solfège (do, re, mi) to convert them to notation
+              Sing a melody and we'll detect the musical notes! Try singing individual notes or a simple tune.
             </div>
 
             <div className="flex justify-center space-x-4 mb-8">

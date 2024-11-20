@@ -8,6 +8,9 @@ from typing import Dict, List, Optional
 import tempfile
 import re
 import logging
+import librosa
+import numpy as np
+import soundfile as sf
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,39 +34,93 @@ app.add_middleware(
 # Initialize AssemblyAI
 aai.settings.api_key = os.getenv("ASSEMBLYAI_API_KEY")
 
-# Define note mapping
-NOTE_MAPPING = {
-    'a': 'A',
-    'b': 'B',
-    'c': 'C',
-    'd': 'D',
-    'e': 'E',
-    'f': 'F',
-    'g': 'G',
-    'do': 'C',
-    're': 'D',
-    'mi': 'E',
-    'fa': 'F',
-    'sol': 'G',
-    'la': 'A',
-    'si': 'B',
-    'ti': 'B',
-    # Add phonetic variations
-    'ay': 'A',
-    'bee': 'B',
-    'see': 'C',
-    'dee': 'D',
-    'ee': 'E',
-    'ef': 'F',
-    'gee': 'G',
-    'doh': 'C',
-    'ray': 'D',
-    'me': 'E',
-    'fah': 'F',
-    'soh': 'G',
-    'lah': 'A',
-    'tee': 'B'
+# Define note frequencies (Hz)
+NOTE_FREQUENCIES = {
+    'C4': 261.63,
+    'C#4/Db4': 277.18,
+    'D4': 293.66,
+    'D#4/Eb4': 311.13,
+    'E4': 329.63,
+    'F4': 349.23,
+    'F#4/Gb4': 369.99,
+    'G4': 392.00,
+    'G#4/Ab4': 415.30,
+    'A4': 440.00,
+    'A#4/Bb4': 466.16,
+    'B4': 493.88,
 }
+
+def detect_pitch(audio_path: str, hop_length: int = 512) -> List[Dict]:
+    """
+    Detect musical notes from an audio file using pitch detection.
+    Returns a list of notes with their timing information.
+    """
+    try:
+        # Load the audio file
+        y, sr = librosa.load(audio_path)
+        
+        # Perform pitch detection
+        pitches, magnitudes = librosa.piptrack(y=y, sr=sr, hop_length=hop_length)
+        
+        # Get timing information
+        times = librosa.times_like(pitches, sr=sr, hop_length=hop_length)
+        
+        notes = []
+        current_note = None
+        note_start = 0
+        min_note_duration = 0.1  # Minimum duration for a note in seconds
+        
+        for time_idx, time in enumerate(times):
+            # Get the highest magnitude frequency at this time
+            index = magnitudes[:, time_idx].argmax()
+            pitch = pitches[index, time_idx]
+            
+            if pitch > 0:  # If a pitch was detected
+                # Find the closest note
+                closest_note = None
+                min_diff = float('inf')
+                
+                for note, freq in NOTE_FREQUENCIES.items():
+                    diff = abs(12 * np.log2(pitch/freq))
+                    if diff < min_diff and diff < 0.5:  # Only match if within half semitone
+                        min_diff = diff
+                        closest_note = note
+                
+                # Handle note transitions
+                if closest_note != current_note:
+                    if current_note and time - note_start >= min_note_duration:
+                        notes.append({
+                            'note': current_note.split('/')[0][:1],  # Get just the note letter
+                            'start': float(note_start),
+                            'end': float(time),
+                            'frequency': float(pitch)
+                        })
+                    current_note = closest_note
+                    note_start = time
+            
+            elif current_note and time - note_start >= min_note_duration:
+                notes.append({
+                    'note': current_note.split('/')[0][:1],  # Get just the note letter
+                    'start': float(note_start),
+                    'end': float(time),
+                    'frequency': float(pitches[index, time_idx - 1])
+                })
+                current_note = None
+        
+        # Add the last note if it exists
+        if current_note and times[-1] - note_start >= min_note_duration:
+            notes.append({
+                'note': current_note.split('/')[0][:1],  # Get just the note letter
+                'start': float(note_start),
+                'end': float(times[-1]),
+                'frequency': float(pitch)
+            })
+        
+        return notes
+    
+    except Exception as e:
+        logger.error(f"Error in pitch detection: {str(e)}")
+        return []
 
 class Note:
     def __init__(self, note: str, start: float, end: float):
@@ -72,42 +129,9 @@ class Note:
         self.end = end
         self.duration = end - start
 
-def find_note_in_word(word: str) -> Optional[str]:
-    """Find a musical note within a word."""
-    word = word.lower()
-    
-    # First check if the entire word is a note
-    if word in NOTE_MAPPING:
-        return NOTE_MAPPING[word]
-    
-    # Then check word beginnings
-    for note_name in NOTE_MAPPING:
-        if word.startswith(note_name):
-            return NOTE_MAPPING[note_name]
-    
-    return None
-
-def text_to_notes(words: List[Dict]) -> List[Note]:
-    """Convert transcribed words to musical notes with timing information."""
-    notes = []
-    
-    for word in words:
-        # Handle AssemblyAI Word objects
-        text = word.text.lower() if hasattr(word, 'text') else str(word).lower()
-        start = float(word.start) / 1000.0 if hasattr(word, 'start') else 0  # Convert to seconds
-        end = float(word.end) / 1000.0 if hasattr(word, 'end') else 0
-        
-        # Remove punctuation from text
-        text = re.sub(r'[^\w\s]', '', text)
-        
-        note = find_note_in_word(text)
-        if note:
-            notes.append(Note(note, start, end))
-    
-    return notes
-
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)) -> Dict:
+    """Handle audio file upload and perform pitch detection."""
     try:
         logger.info("Received audio file: %s", file.filename)
         
@@ -120,49 +144,14 @@ async def upload_audio(file: UploadFile = File(...)) -> Dict:
             
             logger.info("Temporary file created: %s", temp_file.name)
             
-            # Create a transcriber with word-level timestamps
-            config = aai.TranscriptionConfig(
-                word_boost=list(NOTE_MAPPING.keys())  # Boost recognition of note names
-            )
-            transcriber = aai.Transcriber()
+            # Perform pitch detection
+            detected_notes = detect_pitch(temp_file.name)
+            logger.info("Detected notes: %s", detected_notes)
             
-            # Start transcription
-            logger.info("Starting transcription...")
-            transcript = transcriber.transcribe(temp_file.name, config)
+            # Convert detected notes to Note objects
+            notes = [Note(note['note'], note['start'], note['end']) for note in detected_notes]
             
-            logger.info(f"Raw transcript: {transcript.__dict__}")  # Debug log
-            
-            if not transcript or not hasattr(transcript, 'text'):
-                logger.warning("No transcription received")
-                return JSONResponse(
-                    status_code=400,
-                    content={
-                        "status": "error",
-                        "message": "No speech detected in the audio. Please try speaking more clearly or check your microphone."
-                    }
-                )
-            
-            logger.info("Transcription completed: %s", transcript.text)
-            
-            # Clean up the temporary file
-            os.unlink(temp_file.name)
-            
-            # Get words with timing information
-            words = []
-            if hasattr(transcript, 'words'):
-                words = transcript.words
-            elif hasattr(transcript, 'utterances'):
-                for utterance in transcript.utterances:
-                    if hasattr(utterance, 'words'):
-                        words.extend(utterance.words)
-            
-            logger.info(f"Words with timing: {words}")  # Debug log
-            
-            # Convert transcribed words to musical notes with timing
-            notes = text_to_notes(words)
-            logger.info(f"Detected notes: {notes}")  # Debug log
-            
-            # Convert notes to a format suitable for JSON response
+            # Convert notes to response format
             notes_data = [
                 {
                     "note": note.note,
@@ -173,16 +162,16 @@ async def upload_audio(file: UploadFile = File(...)) -> Dict:
                 for note in notes
             ]
             
-            logger.info(f"Final notes data: {notes_data}")  # Debug log
+            # Clean up the temporary file
+            os.unlink(temp_file.name)
             
             response_data = {
-                "text": transcript.text,
-                "notes": notes_data,
-                "status": "success"
+                "status": "success",
+                "notes": notes_data
             }
             
             if not notes_data:
-                response_data["message"] = "No musical notes detected in the speech. Try saying note names like 'A', 'B', 'C' or 'do', 're', 'mi'."
+                response_data["message"] = "No musical notes detected in the audio. Try singing a clear melody."
             
             logger.info("Sending response: %s", response_data)
             return JSONResponse(content=response_data)
