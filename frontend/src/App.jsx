@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react'
+import { useState, useRef, useCallback } from 'react'
 
 const LoadingSpinner = () => (
   <div className="flex justify-center items-center">
@@ -6,17 +6,28 @@ const LoadingSpinner = () => (
   </div>
 )
 
-const NoteDisplay = ({ note, duration }) => {
+// Note frequencies in Hz
+const NOTE_FREQUENCIES = {
+  'C': 261.63,  // Middle C
+  'D': 293.66,
+  'E': 329.63,
+  'F': 349.23,
+  'G': 392.00,
+  'A': 440.00,
+  'B': 493.88
+}
+
+const NoteDisplay = ({ note, duration, isPlaying }) => {
   // Calculate the width based on duration (1 second = 100px)
   const width = Math.max(64, duration * 100)
   
   return (
     <div 
-      className="flex flex-col items-center justify-center h-24 bg-white border-2 border-gray-300 rounded-lg mx-1 transition-all"
+      className={`flex flex-col items-center justify-center h-24 bg-white border-2 ${isPlaying ? 'border-blue-500' : 'border-gray-300'} rounded-lg mx-1 transition-all`}
       style={{ width: `${width}px` }}
     >
-      <span className="text-2xl font-bold text-gray-800">{note}</span>
-      <div className="mt-2 w-8 h-1 bg-gray-800 rounded"></div>
+      <span className={`text-2xl font-bold ${isPlaying ? 'text-blue-500' : 'text-gray-800'}`}>{note}</span>
+      <div className={`mt-2 w-8 h-1 ${isPlaying ? 'bg-blue-500' : 'bg-gray-800'} rounded`}></div>
       <span className="text-sm text-gray-500 mt-1">{duration.toFixed(2)}s</span>
     </div>
   )
@@ -30,8 +41,60 @@ function App() {
   const [isProcessing, setIsProcessing] = useState(false)
   const [error, setError] = useState(null)
   const [message, setMessage] = useState(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [currentNoteIndex, setCurrentNoteIndex] = useState(-1)
   const mediaRecorderRef = useRef(null)
   const chunksRef = useRef([])
+  const audioContextRef = useRef(null)
+
+  // Initialize audio context on first user interaction
+  const initAudioContext = () => {
+    if (!audioContextRef.current) {
+      audioContextRef.current = new (window.AudioContext || window.webkitAudioContext)()
+    }
+    return audioContextRef.current
+  }
+
+  const playNote = useCallback(async (note, duration) => {
+    const audioContext = initAudioContext()
+    const oscillator = audioContext.createOscillator()
+    const gainNode = audioContext.createGain()
+
+    oscillator.type = 'sine'
+    oscillator.frequency.setValueAtTime(NOTE_FREQUENCIES[note], audioContext.currentTime)
+
+    // Apply ADSR envelope
+    gainNode.gain.setValueAtTime(0, audioContext.currentTime)
+    gainNode.gain.linearRampToValueAtTime(0.5, audioContext.currentTime + 0.05) // Attack
+    gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + 0.1) // Decay
+    gainNode.gain.linearRampToValueAtTime(0.3, audioContext.currentTime + duration - 0.1) // Sustain
+    gainNode.gain.linearRampToValueAtTime(0, audioContext.currentTime + duration) // Release
+
+    oscillator.connect(gainNode)
+    gainNode.connect(audioContext.destination)
+
+    oscillator.start(audioContext.currentTime)
+    oscillator.stop(audioContext.currentTime + duration)
+
+    return new Promise(resolve => {
+      setTimeout(resolve, duration * 1000)
+    })
+  }, [])
+
+  const playAllNotes = async () => {
+    if (isPlaying || !musicalNotes.length) return
+
+    setIsPlaying(true)
+    
+    for (let i = 0; i < musicalNotes.length; i++) {
+      setCurrentNoteIndex(i)
+      const { note, duration } = musicalNotes[i]
+      await playNote(note, duration)
+    }
+
+    setIsPlaying(false)
+    setCurrentNoteIndex(-1)
+  }
 
   const startRecording = async () => {
     try {
@@ -56,6 +119,7 @@ function App() {
       setIsRecording(true)
       setTranscribedText('')
       setMusicalNotes([])
+      setCurrentNoteIndex(-1)
     } catch (error) {
       console.error('Error accessing microphone:', error)
       setError('Error accessing microphone. Please ensure you have granted microphone permissions.')
@@ -129,7 +193,7 @@ function App() {
               {!isRecording ? (
                 <button
                   onClick={startRecording}
-                  className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                  className="bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
                   disabled={isProcessing}
                 >
                   Start Recording
@@ -156,6 +220,28 @@ function App() {
                     </>
                   ) : (
                     'Process Audio'
+                  )}
+                </button>
+              )}
+
+              {musicalNotes.length > 0 && !isRecording && !isProcessing && (
+                <button
+                  onClick={playAllNotes}
+                  className={`bg-purple-500 text-white px-6 py-3 rounded-lg hover:bg-purple-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium flex items-center gap-2`}
+                  disabled={isPlaying}
+                >
+                  {isPlaying ? (
+                    <>
+                      <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white"></div>
+                      Playing...
+                    </>
+                  ) : (
+                    <>
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5" viewBox="0 0 20 20" fill="currentColor">
+                        <path fillRule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM9.555 7.168A1 1 0 008 8v4a1 1 0 001.555.832l3-2a1 1 0 000-1.664l-3-2z" clipRule="evenodd" />
+                      </svg>
+                      Play Notes
+                    </>
                   )}
                 </button>
               )}
@@ -189,6 +275,7 @@ function App() {
                       key={index} 
                       note={note.note} 
                       duration={note.duration}
+                      isPlaying={index === currentNoteIndex}
                     />
                   ))}
                 </div>
