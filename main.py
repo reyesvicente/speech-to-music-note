@@ -179,7 +179,7 @@ class Note:
 
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)) -> Dict:
-    """Handle audio file upload and perform pitch detection."""
+    """Handle audio file upload, perform pitch detection and transcription."""
     try:
         logger.info("Received audio file: %s", file.filename)
         
@@ -210,13 +210,30 @@ async def upload_audio(file: UploadFile = File(...)) -> Dict:
                 }
                 for note in notes
             ]
+
+            # Perform AssemblyAI transcription
+            try:
+                # Create a transcriber
+                transcriber = aai.Transcriber()
+                
+                # Start transcription
+                transcript = transcriber.transcribe(temp_file.name)
+                
+                # Get the transcribed text
+                transcribed_text = transcript.text if transcript.text else ""
+                logger.info("Transcribed text: %s", transcribed_text)
+                
+            except Exception as e:
+                logger.error("Error in transcription: %s", str(e))
+                transcribed_text = ""
             
             # Clean up the temporary file
             os.unlink(temp_file.name)
             
             response_data = {
                 "status": "success",
-                "notes": notes_data
+                "notes": notes_data,
+                "text": transcribed_text
             }
             
             if not notes_data:
