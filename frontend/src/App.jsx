@@ -129,7 +129,7 @@ function App() {
               {!isRecording ? (
                 <button
                   onClick={startRecording}
-                  className="bg-green-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
+                  className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium"
                   disabled={isProcessing}
                 >
                   Start Recording
