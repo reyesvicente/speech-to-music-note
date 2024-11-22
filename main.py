@@ -251,4 +251,4 @@ async def upload_audio(file: UploadFile = File(...)) -> Dict:
 
 @app.get("/")
 async def root():
-    return {"message": "Speech to Musical Notes API"}
+    return {"Ping": "Pong!"}
