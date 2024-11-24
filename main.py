@@ -103,8 +103,8 @@ def detect_pitch(audio_path: str, hop_length: int = 1024) -> List[Dict]:
         notes = []
         current_note = None
         note_start = 0
-        min_note_duration = 0.2
-        confidence_threshold = 0.3
+        min_note_duration = 0.3
+        confidence_threshold = 0.5
         
         # Process frames
         for time_idx in range(0, len(times), 2):
