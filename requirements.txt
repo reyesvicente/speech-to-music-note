@@ -6,3 +6,4 @@ pydantic==2.5.1
 librosa
 numpy
 soundfile
+python-multipart

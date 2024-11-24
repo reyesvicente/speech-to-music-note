@@ -215,7 +215,10 @@ function App() {
             <div className="text-center mb-6 text-gray-600">
               Sing a melody and we'll detect the musical notes! Try singing individual notes or a simple tune.
             </div>
-
+            
+            <div className="text-center mb-6 text-gray-600">
+              The backend sleeps when it detects no activity for 50 seconds. Please be patient.
+            </div>
             <div className="flex justify-center space-x-4 mb-8">
               {!isRecording ? (
                 <button
