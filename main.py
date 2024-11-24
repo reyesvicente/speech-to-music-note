@@ -11,6 +11,8 @@ import logging
 import librosa
 import numpy as np
 import soundfile as sf
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -80,21 +82,18 @@ def detect_pitch(audio_path: str, hop_length: int = 1024) -> List[Dict]:
     Returns a list of notes with their timing information.
     """
     try:
-        # Load the audio file with a lower sample rate
-        y, sr = librosa.load(audio_path, sr=16000)
+        # Load the audio file with optimized parameters
+        y, sr = librosa.load(audio_path, sr=22050, duration=10)  # Higher sample rate for better detection
         
-        # Reduce audio length if it's too long
-        if len(y) > sr * 10:  # Limit to 10 seconds
-            y = y[:sr * 10]
-        
-        # Perform pitch detection with optimized parameters
+        # Use smaller hop length for better time resolution
         pitches, magnitudes = librosa.piptrack(
             y=y, 
             sr=sr,
             hop_length=hop_length,
-            fmin=librosa.note_to_hz('C2'),  # Starting from C2
-            fmax=librosa.note_to_hz('C6'),  # Up to C6
-            n_fft=2048
+            fmin=librosa.note_to_hz('C2'),
+            fmax=librosa.note_to_hz('C6'),
+            n_fft=2048,  # Smaller FFT window for better time resolution
+            threshold=0.05  # Lower threshold to catch more potential notes
         )
         
         # Get timing information
@@ -103,28 +102,39 @@ def detect_pitch(audio_path: str, hop_length: int = 1024) -> List[Dict]:
         notes = []
         current_note = None
         note_start = 0
-        min_note_duration = 0.3
-        confidence_threshold = 0.5
+        min_note_duration = 0.1  # Shorter minimum duration for quick sounds
+        confidence_threshold = 0.5  # Lower threshold to catch more notes
         
-        # Process frames
-        for time_idx in range(0, len(times), 2):
+        # Process frames more frequently
+        for time_idx in range(0, len(times), 2):  # Process every 2nd frame
             time = times[time_idx]
             
-            # Get the highest magnitude frequency at this time
-            index = magnitudes[:, time_idx].argmax()
+            # Vectorized operation for finding max magnitude
+            frame_magnitudes = magnitudes[:, time_idx]
+            if not np.any(frame_magnitudes > confidence_threshold):
+                if current_note and time - note_start >= min_note_duration:
+                    notes.append({
+                        'note': current_note[:-1],
+                        'octave': int(current_note[-1]),
+                        'start': float(note_start),
+                        'end': float(time),
+                        'frequency': float(pitches[:, time_idx - 1].max()),
+                        'confidence': float(magnitudes[:, time_idx - 1].max())
+                    })
+                    current_note = None
+                continue
+                
+            index = frame_magnitudes.argmax()
             pitch = pitches[index, time_idx]
-            magnitude = magnitudes[index, time_idx]
+            magnitude = frame_magnitudes[index]
             
             if pitch > 0 and magnitude > confidence_threshold:
                 note_name = get_note_name(pitch)
                 
-                # Validate note_name and octave
                 if note_name and len(note_name) >= 2:
                     try:
-                        note_letter = note_name[:-1]
                         octave = int(note_name[-1])
                         
-                        # Only process notes within valid range
                         if 2 <= octave <= 6:
                             if note_name != current_note:
                                 if current_note and time - note_start >= min_note_duration:
@@ -142,26 +152,29 @@ def detect_pitch(audio_path: str, hop_length: int = 1024) -> List[Dict]:
                         continue
             
             elif current_note and time - note_start >= min_note_duration:
-                try:
-                    notes.append({
-                        'note': current_note[:-1],
-                        'octave': int(current_note[-1]),
-                        'start': float(note_start),
-                        'end': float(time),
-                        'frequency': float(pitches[index, time_idx - 1]),
-                        'confidence': float(magnitudes[index, time_idx - 1])
-                    })
-                except (ValueError, IndexError):
-                    pass
+                notes.append({
+                    'note': current_note[:-1],
+                    'octave': int(current_note[-1]),
+                    'start': float(note_start),
+                    'end': float(time),
+                    'frequency': float(pitches[:, time_idx - 1].max()),
+                    'confidence': float(magnitudes[:, time_idx - 1].max())
+                })
                 current_note = None
         
-        # Double-check all notes are within valid range
-        notes = [note for note in notes if 2 <= note['octave'] <= 6]
+        # Add the last note if it exists
+        if current_note and (times[-1] - note_start) >= min_note_duration:
+            notes.append({
+                'note': current_note[:-1],
+                'octave': int(current_note[-1]),
+                'start': float(note_start),
+                'end': float(times[-1]),
+                'frequency': float(pitches[:, -1].max()),
+                'confidence': float(magnitudes[:, -1].max())
+            })
         
-        # Limit the number of notes returned
-        max_notes = 20
-        if len(notes) > max_notes:
-            notes = notes[:max_notes]
+        # Filter notes but allow more through
+        notes = [note for note in notes if 2 <= note['octave'] <= 6][:30]  # Increased max notes
         
         return notes
     
@@ -177,6 +190,16 @@ class Note:
         self.end = end
         self.duration = end - start
 
+async def transcribe_audio(file_path: str) -> str:
+    """Async function to handle transcription."""
+    try:
+        transcriber = aai.Transcriber()
+        transcript = await asyncio.to_thread(transcriber.transcribe, file_path)
+        return transcript.text if transcript.text else ""
+    except Exception as e:
+        logger.error(f"Error in transcription: {str(e)}")
+        return ""
+
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)) -> Dict:
     """Handle audio file upload, perform pitch detection and transcription."""
@@ -185,47 +208,40 @@ async def upload_audio(file: UploadFile = File(...)) -> Dict:
         
         # Create a temporary file to store the uploaded audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-            # Write the uploaded file content to the temporary file
             content = await file.read()
             temp_file.write(content)
             temp_file.flush()
             
             logger.info("Temporary file created: %s", temp_file.name)
             
-            # Perform pitch detection
-            detected_notes = detect_pitch(temp_file.name)
+            # Run pitch detection and transcription concurrently
+            pitch_detection_task = asyncio.create_task(
+                asyncio.to_thread(detect_pitch, temp_file.name)
+            )
+            transcription_task = asyncio.create_task(
+                transcribe_audio(temp_file.name)
+            )
+            
+            # Wait for both tasks to complete
+            detected_notes, transcribed_text = await asyncio.gather(
+                pitch_detection_task,
+                transcription_task
+            )
+            
             logger.info("Detected notes: %s", detected_notes)
             
             # Convert detected notes to Note objects
-            notes = [Note(note['note'], note['octave'], note['start'], note['end']) for note in detected_notes]
+            notes = [Note(note['note'], note['octave'], note['start'], note['end']) 
+                    for note in detected_notes]
             
-            # Convert notes to response format
-            notes_data = [
-                {
-                    "note": note.note,
-                    "octave": note.octave,
-                    "start": note.start,
-                    "end": note.end,
-                    "duration": note.end - note.start
-                }
-                for note in notes
-            ]
-
-            # Perform AssemblyAI transcription
-            try:
-                # Create a transcriber
-                transcriber = aai.Transcriber()
-                
-                # Start transcription
-                transcript = transcriber.transcribe(temp_file.name)
-                
-                # Get the transcribed text
-                transcribed_text = transcript.text if transcript.text else ""
-                logger.info("Transcribed text: %s", transcribed_text)
-                
-            except Exception as e:
-                logger.error("Error in transcription: %s", str(e))
-                transcribed_text = ""
+            # Convert notes to response format using list comprehension
+            notes_data = [{
+                "note": note.note,
+                "octave": note.octave,
+                "start": note.start,
+                "end": note.end,
+                "duration": note.end - note.start
+            } for note in notes]
             
             # Clean up the temporary file
             os.unlink(temp_file.name)
