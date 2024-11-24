@@ -104,6 +104,7 @@ function App() {
     setTranscribedText('')
     setMusicalNotes([])
     setCurrentNoteIndex(-1)
+    setIsRecording(false) // Ensure recording state is false when file is uploaded
   }
 
   const triggerFileInput = () => {
@@ -213,7 +214,7 @@ function App() {
 
     try {
       console.log('Sending request to backend...')
-      const response = await fetch('https://speech-to-music-note.onrender.com/upload-audio', {
+      const response = await fetch('http://localhost:8000/upload-audio', {
         method: 'POST',
         body: formData,
       })
@@ -317,6 +318,7 @@ function App() {
                 </button>
               )}
               
+              {/* Show Process button for both recorded and uploaded audio */}
               {audioBlob && !isRecording && (
                 <button
                   onClick={uploadAudio}
