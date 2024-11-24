@@ -83,7 +83,7 @@ def detect_pitch(audio_path: str, hop_length: int = 1024) -> List[Dict]:
     """
     try:
         # Load the audio file with optimized parameters
-        y, sr = librosa.load(audio_path, sr=22050, duration=10)  # Higher sample rate for better detection
+        y, sr = librosa.load(audio_path, sr=16000, duration=10)  # Standard sample rate
         
         # Use smaller hop length for better time resolution
         pitches, magnitudes = librosa.piptrack(
@@ -103,7 +103,7 @@ def detect_pitch(audio_path: str, hop_length: int = 1024) -> List[Dict]:
         current_note = None
         note_start = 0
         min_note_duration = 0.1  # Shorter minimum duration for quick sounds
-        confidence_threshold = 0.5  # Lower threshold to catch more notes
+        confidence_threshold = 0.5  # Balanced threshold for note detection
         
         # Process frames more frequently
         for time_idx in range(0, len(times), 2):  # Process every 2nd frame
@@ -113,14 +113,17 @@ def detect_pitch(audio_path: str, hop_length: int = 1024) -> List[Dict]:
             frame_magnitudes = magnitudes[:, time_idx]
             if not np.any(frame_magnitudes > confidence_threshold):
                 if current_note and time - note_start >= min_note_duration:
-                    notes.append({
-                        'note': current_note[:-1],
-                        'octave': int(current_note[-1]),
-                        'start': float(note_start),
-                        'end': float(time),
-                        'frequency': float(pitches[:, time_idx - 1].max()),
-                        'confidence': float(magnitudes[:, time_idx - 1].max())
-                    })
+                    try:
+                        notes.append({
+                            'note': current_note[:-1],
+                            'octave': int(current_note[-1]),
+                            'start': float(note_start),
+                            'end': float(time),
+                            'frequency': float(pitches[:, time_idx - 1].max()),
+                            'confidence': float(magnitudes[:, time_idx - 1].max())
+                        })
+                    except (NameError, IndexError) as e:
+                        logger.error(f"Error adding note: {str(e)}")
                     current_note = None
                 continue
                 
@@ -148,30 +151,23 @@ def detect_pitch(audio_path: str, hop_length: int = 1024) -> List[Dict]:
                                     })
                                 current_note = note_name
                                 note_start = time
-                    except (ValueError, IndexError):
+                    except (ValueError, IndexError) as e:
+                        logger.error(f"Error processing note: {str(e)}")
                         continue
             
             elif current_note and time - note_start >= min_note_duration:
-                notes.append({
-                    'note': current_note[:-1],
-                    'octave': int(current_note[-1]),
-                    'start': float(note_start),
-                    'end': float(time),
-                    'frequency': float(pitches[:, time_idx - 1].max()),
-                    'confidence': float(magnitudes[:, time_idx - 1].max())
-                })
+                try:
+                    notes.append({
+                        'note': current_note[:-1],
+                        'octave': int(current_note[-1]),
+                        'start': float(note_start),
+                        'end': float(time),
+                        'frequency': float(pitches[:, time_idx - 1].max()),
+                        'confidence': float(magnitudes[:, time_idx - 1].max())
+                    })
+                except (IndexError, ValueError) as e:
+                    logger.error(f"Error adding final note: {str(e)}")
                 current_note = None
-        
-        # Add the last note if it exists
-        if current_note and (times[-1] - note_start) >= min_note_duration:
-            notes.append({
-                'note': current_note[:-1],
-                'octave': int(current_note[-1]),
-                'start': float(note_start),
-                'end': float(times[-1]),
-                'frequency': float(pitches[:, -1].max()),
-                'confidence': float(magnitudes[:, -1].max())
-            })
         
         # Filter notes but allow more through
         notes = [note for note in notes if 2 <= note['octave'] <= 6][:30]  # Increased max notes
@@ -208,61 +204,71 @@ async def upload_audio(file: UploadFile = File(...)) -> Dict:
         
         # Create a temporary file to store the uploaded audio
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as temp_file:
-            content = await file.read()
-            temp_file.write(content)
-            temp_file.flush()
-            
-            logger.info("Temporary file created: %s", temp_file.name)
-            
-            # Run pitch detection and transcription concurrently
-            pitch_detection_task = asyncio.create_task(
-                asyncio.to_thread(detect_pitch, temp_file.name)
-            )
-            transcription_task = asyncio.create_task(
-                transcribe_audio(temp_file.name)
-            )
-            
-            # Wait for both tasks to complete
-            detected_notes, transcribed_text = await asyncio.gather(
-                pitch_detection_task,
-                transcription_task
-            )
-            
-            logger.info("Detected notes: %s", detected_notes)
-            
-            # Convert detected notes to Note objects
-            notes = [Note(note['note'], note['octave'], note['start'], note['end']) 
-                    for note in detected_notes]
-            
-            # Convert notes to response format using list comprehension
-            notes_data = [{
-                "note": note.note,
-                "octave": note.octave,
-                "start": note.start,
-                "end": note.end,
-                "duration": note.end - note.start
-            } for note in notes]
-            
-            # Clean up the temporary file
-            os.unlink(temp_file.name)
-            
-            response_data = {
-                "status": "success",
-                "notes": notes_data,
-                "text": transcribed_text
-            }
-            
-            if not notes_data:
-                response_data["message"] = "No musical notes detected in the audio. Try singing a clear melody."
-            
-            logger.info("Sending response: %s", response_data)
-            return JSONResponse(content=response_data)
+            try:
+                content = await file.read()
+                temp_file.write(content)
+                temp_file.flush()
+                
+                logger.info("Temporary file created: %s", temp_file.name)
+                
+                # Run pitch detection and transcription concurrently
+                pitch_detection_task = asyncio.create_task(
+                    asyncio.to_thread(detect_pitch, temp_file.name)
+                )
+                transcription_task = asyncio.create_task(
+                    transcribe_audio(temp_file.name)
+                )
+                
+                # Wait for both tasks to complete
+                detected_notes, transcribed_text = await asyncio.gather(
+                    pitch_detection_task,
+                    transcription_task
+                )
+                
+                if not detected_notes:
+                    logger.warning("No notes detected in the audio file")
+                
+                logger.info("Detected notes: %s", detected_notes)
+                
+                # Convert detected notes to Note objects
+                notes = [Note(note['note'], note['octave'], note['start'], note['end']) 
+                        for note in detected_notes]
+                
+                # Convert notes to response format using list comprehension
+                notes_data = [{
+                    "note": note.note,
+                    "octave": note.octave,
+                    "start": note.start,
+                    "end": note.end,
+                    "duration": note.end - note.start
+                } for note in notes]
+                
+                response_data = {
+                    "status": "success",
+                    "notes": notes_data,
+                    "text": transcribed_text
+                }
+                
+                if not notes_data:
+                    response_data["message"] = "No musical notes detected in the audio. Try singing a clear melody."
+                
+                logger.info("Sending response: %s", response_data)
+                return JSONResponse(content=response_data)
+                
+            except Exception as e:
+                logger.error(f"Error processing file: {str(e)}")
+                raise
+            finally:
+                try:
+                    os.unlink(temp_file.name)
+                except Exception as e:
+                    logger.error(f"Error deleting temporary file: {str(e)}")
             
     except Exception as e:
-        logger.error("Error processing audio: %s", str(e))
+        logger.error(f"Error in upload_audio: {str(e)}")
         return JSONResponse(
             status_code=500,
-            content={"status": "error", "message": str(e)}
+            content={"status": "error", "message": f"Error processing audio: {str(e)}"}
         )
 
 @app.get("/")
