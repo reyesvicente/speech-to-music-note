@@ -65,9 +65,50 @@ function App() {
   const [message, setMessage] = useState(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentNoteIndex, setCurrentNoteIndex] = useState(-1)
+  const [fileName, setFileName] = useState('')
   const mediaRecorderRef = useRef(null)
   const audioChunksRef = useRef([])
   const audioContextRef = useRef(null)
+  const fileInputRef = useRef(null)
+
+  // Accepted audio file types
+  const acceptedFileTypes = [
+    'audio/wav',
+    'audio/mp3',
+    'audio/mpeg',
+    'audio/ogg',
+    'audio/webm',
+    'audio/x-m4a'
+  ]
+
+  const handleFileUpload = (event) => {
+    const file = event.target.files[0]
+    if (!file) return
+
+    // Check file type
+    if (!acceptedFileTypes.includes(file.type)) {
+      setError('Invalid file type. Please upload an audio file (WAV, MP3, OGG, etc.)')
+      return
+    }
+
+    // Check file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      setError('File is too large. Maximum size is 10MB.')
+      return
+    }
+
+    setFileName(file.name)
+    setAudioBlob(file)
+    setError(null)
+    setMessage(null)
+    setTranscribedText('')
+    setMusicalNotes([])
+    setCurrentNoteIndex(-1)
+  }
+
+  const triggerFileInput = () => {
+    fileInputRef.current?.click()
+  }
 
   // Debounced version of setCurrentNoteIndex to reduce renders
   const debouncedSetCurrentNote = useCallback(
@@ -168,7 +209,7 @@ function App() {
     setError(null)
 
     const formData = new FormData()
-    formData.append('file', audioBlob, 'recording.wav')
+    formData.append('file', audioBlob, fileName || 'recording.wav')
 
     try {
       console.log('Sending request to backend...')
@@ -219,6 +260,45 @@ function App() {
             <div className="text-center mb-6 text-gray-600">
               The backend sleeps when it detects no activity for 50 seconds. Please be patient.
             </div>
+
+            {/* File Upload Section */}
+            <div className="mb-8">
+              <div className="flex flex-col items-center justify-center w-full">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept={acceptedFileTypes.join(',')}
+                  onChange={handleFileUpload}
+                  className="hidden"
+                />
+                <button
+                  onClick={triggerFileInput}
+                  className="bg-blue-500 text-white px-6 py-3 rounded-lg hover:bg-blue-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-medium mb-2"
+                  disabled={isProcessing || isRecording}
+                >
+                  Upload Audio File
+                </button>
+                <p className="text-sm text-gray-500 text-center">
+                  Accepted formats: WAV, MP3, OGG, WebM, M4A (Max 10MB)
+                </p>
+                {fileName && (
+                  <p className="mt-2 text-sm text-gray-700">
+                    Selected file: {fileName}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {/* Divider */}
+            <div className="relative mb-8">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-gray-200"></div>
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-2 bg-white text-gray-500">OR</span>
+              </div>
+            </div>
+
             <div className="flex justify-center space-x-4 mb-8">
               {!isRecording ? (
                 <button
