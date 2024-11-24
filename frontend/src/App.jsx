@@ -214,7 +214,7 @@ function App() {
 
     try {
       console.log('Sending request to backend...')
-      const response = await fetch('http://localhost:8000/upload-audio', {
+      const response = await fetch('https://speech-to-music-note.onrender.com/upload-audio', {
         method: 'POST',
         body: formData,
       })
